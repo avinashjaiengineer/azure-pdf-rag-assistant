@@ -11,3 +11,4 @@ data/processed/*
 terraform.tfstate
 terraform.tfstate.*
 *.tfvars
+.playwright-cli/

@@ -4,6 +4,92 @@ Upload PDFs, ask questions, get answers grounded in the documents with file/page
 Built in phases: everything works locally first (Ollama + FAISS), then each component is
 swapped for its Azure equivalent by changing configuration, not code.
 
+**Stack:** Azure OpenAI (`gpt-5-mini`, `text-embedding-3-small`) · Azure AI Search (hybrid BM25 + vector) ·
+Azure Blob Storage · FastAPI · Streamlit · Azure Container Apps · Terraform · GitHub Actions (OIDC).
+No API keys anywhere: every service authenticates with Microsoft Entra ID.
+
+- [Walkthrough: using the app](#walkthrough-using-the-app)
+- [Phases](#phases) and how each was built
+- [Quick start](#quick-start-phase-1-fully-local-0) to run it yourself
+
+## Walkthrough: using the app
+
+All screenshots are from the deployed app on Azure Container Apps. To follow along, use the sample
+PDF in [`docs/sample/contoso-cloud-handbook.pdf`](docs/sample/contoso-cloud-handbook.pdf), a fictional
+three-page cloud policy handbook.
+
+### 1. Open the app
+
+The sidebar lists every indexed document and its ID. The footer shows which backends are active:
+here, everything runs on Azure (`LLM: azure · embeddings: azure · search: azure_search · storage: blob`).
+
+![Home screen](docs/screenshots/01-home.png)
+
+### 2. Choose a PDF
+
+Click **Upload** in the sidebar and pick one or more PDFs (up to 20 MB each).
+
+![PDF selected for upload](docs/screenshots/02-select-pdf.png)
+
+### 3. Upload & index
+
+Click **Upload & index**. The API checks the file is a real PDF, extracts text page by page, splits it
+into chunks, embeds them with Azure OpenAI, indexes them in Azure AI Search, and stores the original in
+Blob Storage. The new document appears in the list straight away.
+
+![Document indexed](docs/screenshots/03-indexed.png)
+
+Rejected uploads never get stored: wrong extension or non-PDF bytes (400), over 20 MB (413), or no
+extractable text, such as a scanned PDF (422). Uploading a new version under the same filename replaces
+the old one.
+
+### 4. Ask a question
+
+Type a question in the box at the bottom. The answer uses only the uploaded documents and cites the file
+and page inline. **Sources** lists the pages the answer actually used.
+
+![Answer with citation](docs/screenshots/04-answer.png)
+
+### 5. Ask across documents
+
+Retrieval searches every document at once, so one answer can combine facts from several PDFs, each
+cited to its own page.
+
+![Answer combining three PDFs](docs/screenshots/05-multi-document.png)
+
+### 6. See why it answered that way
+
+Turn on **Show retrieved chunks** to see the exact passages sent to the model, with their hybrid
+search scores. **Chunks to retrieve (top-k)** controls how many passages are retrieved (default 5).
+Raise it for broad questions; lower it for precise ones.
+
+![Retrieved chunks with scores](docs/screenshots/06-retrieved-chunks.png)
+
+### 7. It won't make things up
+
+If the documents don't contain the answer, the assistant says so instead of guessing, and shows no
+sources.
+
+![Grounded answer and refusal](docs/screenshots/07-grounded-refusal.png)
+
+### 8. Manage documents
+
+- **Delete:** click the bin icon next to a document (visible in step 3). This removes its chunks from
+  the search index and the PDF from Blob Storage.
+- **Clear chat:** resets the conversation; documents stay indexed.
+
+### For developers: API and pipeline
+
+The UI is a thin client over a REST API. Interactive docs are at `/docs` when the API runs locally
+(`uvicorn src.api.main:app`). In Azure the API is internal-only and reachable just from the UI.
+
+![API docs](docs/screenshots/08-api-docs.png)
+
+Every push to `main` runs tests and Terraform checks, builds both images, pushes them to Azure
+Container Registry, and rolls the Container Apps to the new version.
+
+![CI/CD pipeline](docs/screenshots/09-ci-pipeline.png)
+
 ## Phases
 
 | Phase | Scope | Status |
