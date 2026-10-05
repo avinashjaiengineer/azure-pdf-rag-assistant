@@ -14,7 +14,7 @@ swapped for its Azure equivalent by changing configuration, not code.
 | 4 | Azure Blob Storage for uploaded PDFs (`DOCUMENT_STORAGE=blob`) | ✅ Done |
 | 5 | FastAPI (`/upload`, `/ingest`, `/chat`, `/documents`) + Streamlit UI | ✅ Done |
 | 6 | Docker → GitHub Actions → Azure Container Registry → Azure Container Apps (scale to zero) | ✅ Done |
-| 7 | Terraform infrastructure + GitHub Actions CI/CD | ⏳ |
+| 7 | Terraform infrastructure + GitHub Actions CI/CD (test → build → deploy) | ✅ Done |
 
 ## Architecture (Phase 1)
 
@@ -173,19 +173,69 @@ Internet ──► ca-pdfrag-ui (Streamlit, external, IP-allowlisted) ──► 
   blocked on Free Trial subscriptions. Actions logs in to Azure with OIDC: an Entra app (`gh-pdfrag-ci`)
   with a federated credential for this repo's `main` branch and only `AcrPush` on the registry. Note that
   GitHub now issues subjects with immutable IDs (`repo:owner@<id>/repo@<id>:ref:refs/heads/main`).
-- **Deploy** with `bash scripts/deploy.sh` (idempotent). It deploys the image tagged with the current commit,
-  so push and wait for the workflow first.
+- **Deploy** happens in CI on every push to `main` (Phase 7). `bash scripts/deploy.sh` is a manual
+  fallback that rolls both apps to an existing tag, e.g. `TAG=<older-sha>` to roll back.
 - **No secrets anywhere**: both apps run as a user-assigned managed identity (`id-pdfrag-<suffix>`) with
   `AcrPull`, `Cognitive Services OpenAI User`, `Search Index Data Contributor`, `Search Service Contributor`
   and `Storage Blob Data Contributor`. `AZURE_CLIENT_ID` tells `DefaultAzureCredential` which identity to use.
 - **Network**: the API has internal ingress (unreachable from the internet); the UI calls it at
-  `http://ca-pdfrag-api`. The UI is restricted to the deployer's public IP; pass more with
-  `ALLOWED_IPS="1.2.3.4/32,5.6.7.0/24" bash scripts/deploy.sh`.
+  `http://ca-pdfrag-api`. The UI is restricted to the IPs in Terraform's `ui_allowed_cidrs`.
 - **Cost**: both apps scale 0-1 replicas, so idle costs nothing beyond the Container Apps free grant.
   ACR Basic is ~$5/month. The first request after idle has a cold start of a few seconds.
 - AI Search is near-real-time: a deleted document can still be listed for about a second.
 
 `docker-compose.yml` runs both containers locally in fully-local mode (Ollama + FAISS), for machines with Docker.
+
+## Phase 7: Terraform + CI/CD
+
+Everything from Phases 2-6 was first created with `az` and then **adopted into Terraform with `import`
+blocks** (26 resources, 0 replaced). The import blocks were removed afterwards; `terraform plan` shows no drift.
+
+```
+infrastructure/terraform/
+  providers.tf   azurerm 4.x + azuread 3.x, remote state in Azure Storage (Entra ID auth)
+  variables.tf   suffix, regions, model deployments, GitHub OIDC subject, developer IDs, UI allow-list
+  main.tf        RG, OpenAI + deployments, AI Search, Storage, ACR, identity, Log Analytics, Container Apps
+  iam.tf         role assignments for the app identity, developers, and the CI identity; CI Entra app + OIDC
+  outputs.tf     UI URL, client IDs, endpoints for a local .env
+```
+
+**State** lives in `rg-pdf-rag-tfstate/sttfstate487f` (versioned, 14-day soft delete, no shared keys), separate
+from the app resource group so destroying one can't destroy the other. One-time bootstrap:
+
+```bash
+az group create -n rg-pdf-rag-tfstate -l eastus2
+az storage account create -n sttfstate487f -g rg-pdf-rag-tfstate -l eastus2 --sku Standard_LRS   --allow-blob-public-access false --allow-shared-key-access false --min-tls-version TLS1_2
+az storage account blob-service-properties update -n sttfstate487f -g rg-pdf-rag-tfstate   --enable-versioning true --enable-delete-retention true --delete-retention-days 14
+az storage container-rm create --storage-account sttfstate487f -g rg-pdf-rag-tfstate -n tfstate
+# + Storage Blob Data Contributor on that account for whoever runs terraform
+```
+
+Day to day:
+
+```bash
+cd infrastructure/terraform
+terraform init
+terraform plan     # review
+terraform apply
+```
+
+**Who changes what:**
+
+| Change | Owner |
+|---|---|
+| Resources, roles, env vars, scaling, IP allow-list | Terraform (run by a developer) |
+| Container image tag | CI `deploy` job (Terraform ignores `image`) |
+
+Terraform runs locally rather than in CI on purpose: managing role assignments needs Owner-level rights,
+and the CI identity deliberately has only `AcrPush` + `Container Apps Contributor` on the two apps.
+
+**Pipeline** (`.github/workflows/build.yml`):
+
+```
+PR:          test ─┬─ terraform fmt/validate
+push main:   test ─┴─ terraform fmt/validate ──► build+push images (tag = SHA) ──► roll API, UI ──► wait until ready
+```
 
 ## Project layout
 
@@ -198,9 +248,10 @@ src/
   rag/                    # embeddings, vector_store, retriever, generator, pipeline
   api/                    # FastAPI app (main.py), routes, Services container
 frontend/app.py           # Streamlit UI
-scripts/                  # ingest.py, ask.py (CLI), deploy.sh (Container Apps)
+scripts/                  # ingest.py, ask.py (CLI), deploy.sh (manual roll/rollback)
+infrastructure/terraform/ # all Azure infrastructure (Phase 7)
 Dockerfile, frontend/Dockerfile, docker-compose.yml
-.github/workflows/build.yml  # test + build + push images (OIDC)
+.github/workflows/build.yml  # test, terraform checks, build + push images, deploy (OIDC)
 tests/                    # chunking, pipeline, AI Search, storage, API tests (all offline, with fakes)
 data/raw, data/processed  # local PDFs and FAISS index (git-ignored)
 ```

@@ -1,8 +1,11 @@
 name: build
 
-# Tests, then builds both images and pushes them to Azure Container Registry.
-# Auth is OIDC (federated credential on an Entra app) — no Azure secrets stored in GitHub.
-# Repo variables required: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ACR_NAME
+# test -> images -> deploy on every push to main; test + terraform checks on PRs.
+# Azure auth is OIDC (federated credential on the gh-pdfrag-ci Entra app): no secrets in GitHub.
+# That identity can only push images (AcrPush) and update the two container apps
+# (Container Apps Contributor, scoped to each app). Infrastructure changes go through Terraform, run locally.
+#
+# Repo variables: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ACR_NAME, RESOURCE_GROUP
 
 on:
   push:
@@ -12,7 +15,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # OIDC token for azure/login
+  id-token: write # OIDC token for azure/login
 
 jobs:
   test:
@@ -30,8 +33,20 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
 
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
   images:
-    needs: test
+    needs: [test, terraform]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -60,3 +75,38 @@ jobs:
             ${{ vars.ACR_NAME }}.azurecr.io/${{ matrix.image }}:latest
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    needs: images
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency: deploy-dev # never run two rollouts at once
+    env:
+      RG: ${{ vars.RESOURCE_GROUP }}
+      REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: az config set extension.use_dynamic_install=yes_without_prompt
+      - name: Roll API, then UI
+        run: |
+          for app in api ui; do
+            az containerapp update -n ca-pdfrag-$app -g "$RG" \
+              --image "$REGISTRY/pdf-rag-$app:${{ github.sha }}" -o none
+          done
+      - name: Wait for healthy revisions
+        run: |
+          for app in api ui; do
+            for i in $(seq 1 30); do
+              read -r latest ready image < <(az containerapp show -n ca-pdfrag-$app -g "$RG" \
+                --query "[properties.latestRevisionName, properties.latestReadyRevisionName, properties.template.containers[0].image]" -o tsv | tr '\n' ' ')
+              if [ "$latest" = "$ready" ] && [[ "$image" == *":${{ github.sha }}" ]]; then
+                echo "ca-pdfrag-$app ready: $ready"; continue 2
+              fi
+              sleep 10
+            done
+            echo "::error::ca-pdfrag-$app revision $latest did not become ready"; exit 1
+          done
