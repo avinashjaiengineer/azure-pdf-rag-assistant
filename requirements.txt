@@ -1,4 +1,4 @@
-# Phase 1 â€” local RAG
+# Phase 1 - local RAG
 pypdf>=6.0
 faiss-cpu>=1.9
 numpy>=2.0
@@ -7,17 +7,17 @@ python-dotenv>=1.0
 pydantic>=2.7
 pydantic-settings>=2.3
 
-# Phase 2 â€” Azure OpenAI (Entra ID auth)
+# Phase 2 - Azure OpenAI (Entra ID auth)
 openai>=2.0
 azure-identity>=1.19
 
-# Phase 3 — Azure AI Search
+# Phase 3 - Azure AI Search
 azure-search-documents>=11.6
 
-# Phase 4 — Azure Blob Storage
+# Phase 4 - Azure Blob Storage
 azure-storage-blob>=12.20
 
-# Phase 5 â€” API + UI
+# Phase 5 - API + UI
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
