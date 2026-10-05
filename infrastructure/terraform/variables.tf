@@ -43,7 +43,7 @@ variable "developer_object_ids" {
 variable "ui_allowed_cidrs" {
   description = "CIDRs allowed to reach the public UI."
   type        = list(string)
-  default     = ["205.254.168.60/32"]
+  default     = ["205.254.168.100/32"]
 }
 
 variable "chat_model" {
