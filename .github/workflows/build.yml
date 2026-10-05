@@ -101,8 +101,10 @@ jobs:
         run: |
           for app in api ui; do
             for i in $(seq 1 30); do
-              read -r latest ready image < <(az containerapp show -n ca-pdfrag-$app -g "$RG" \
-                --query "[properties.latestRevisionName, properties.latestReadyRevisionName, properties.template.containers[0].image]" -o tsv | tr '\n' ' ')
+              out=$(az containerapp show -n ca-pdfrag-$app -g "$RG" -o tsv \
+                --query "[properties.latestRevisionName, properties.latestReadyRevisionName, properties.template.containers[0].image]")
+              # Here-string always ends in a newline, so `read` never hits EOF (fatal under bash -e).
+              { read -r latest; read -r ready; read -r image; } <<< "$out"
               if [ "$latest" = "$ready" ] && [[ "$image" == *":${{ github.sha }}" ]]; then
                 echo "ca-pdfrag-$app ready: $ready"; continue 2
               fi
