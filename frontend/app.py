@@ -13,7 +13,7 @@ import streamlit as st
 
 API_URL = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
 
-st.set_page_config(page_title="Azure PDF RAG Assistant", page_icon="📄", layout="wide")
+st.set_page_config(page_title="Azure PDF RAG Assistant", page_icon=":material/description:", layout="wide")
 
 
 @st.cache_resource
@@ -43,7 +43,7 @@ def call(method: str, path: str, **kwargs) -> httpx.Response | None:
 
 # ---------- Sidebar: documents ----------
 with st.sidebar:
-    st.header("📄 Documents")
+    st.header(":material/folder_open: Documents")
 
     with st.form("upload", clear_on_submit=True):
         files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
@@ -62,7 +62,7 @@ with st.sidebar:
     for doc in docs:
         name_col, delete_col = st.columns([5, 1])
         name_col.markdown(f"**{doc['filename']}**  \n`{doc['document_id']}`")
-        if delete_col.button("🗑️", key=f"del-{doc['document_id']}", help=f"Delete {doc['filename']}"):
+        if delete_col.button("", icon=":material/delete:", key=f"del-{doc['document_id']}", help=f"Delete {doc['filename']}"):
             if call("DELETE", f"/documents/{doc['document_id']}"):
                 st.rerun()
 
@@ -91,7 +91,7 @@ def render_answer(answer: dict, show: bool) -> None:
     if answer["citations"]:
         st.markdown(
             "**Sources:** "
-            + " · ".join(f"📄 {c['filename']}, p. {c['page_number']}" for c in answer["citations"])
+            + " · ".join(f":material/description: {c['filename']}, p. {c['page_number']}" for c in answer["citations"])
         )
     if show and answer["sources"]:
         with st.expander(f"Retrieved chunks ({len(answer['sources'])})"):
