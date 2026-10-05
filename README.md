@@ -13,7 +13,7 @@ swapped for its Azure equivalent by changing configuration, not code.
 | 3 | Azure AI Search with hybrid (keyword + vector) retrieval (`VECTOR_STORE=azure_search`) | ✅ Done |
 | 4 | Azure Blob Storage for uploaded PDFs (`DOCUMENT_STORAGE=blob`) | ✅ Done |
 | 5 | FastAPI (`/upload`, `/ingest`, `/chat`, `/documents`) + Streamlit UI | ✅ Done |
-| 6 | Docker → Azure Container Registry → Azure Container Apps (scale to zero) | ⏳ |
+| 6 | Docker → GitHub Actions → Azure Container Registry → Azure Container Apps (scale to zero) | ✅ Done |
 | 7 | Terraform infrastructure + GitHub Actions CI/CD | ⏳ |
 
 ## Architecture (Phase 1)
@@ -156,6 +156,37 @@ it is stored, and the index entry is rolled back if storing fails, so index and 
 
 The UI only talks to the API over HTTP, so the two can be deployed as separate containers in Phase 6.
 
+## Phase 6: Containers on Azure Container Apps
+
+```
+git push ──► GitHub Actions: pytest ──► build 2 images ──► ACR (tag = commit SHA)
+                                   (OIDC, no secrets)          │
+                                                               ▼
+Internet ──► ca-pdfrag-ui (Streamlit, external, IP-allowlisted) ──► ca-pdfrag-api (FastAPI, internal only)
+                                                                         │ managed identity
+                                                         ┌───────────────┼───────────────┐
+                                                    Azure OpenAI     AI Search      Blob Storage
+```
+
+- **Two images**: `Dockerfile` (API) and `frontend/Dockerfile` (UI), both non-root `python:3.12-slim`.
+- **Builds run in GitHub Actions** (`.github/workflows/build.yml`), because ACR Tasks (`az acr build`) are
+  blocked on Free Trial subscriptions. Actions logs in to Azure with OIDC: an Entra app (`gh-pdfrag-ci`)
+  with a federated credential for this repo's `main` branch and only `AcrPush` on the registry. Note that
+  GitHub now issues subjects with immutable IDs (`repo:owner@<id>/repo@<id>:ref:refs/heads/main`).
+- **Deploy** with `bash scripts/deploy.sh` (idempotent). It deploys the image tagged with the current commit,
+  so push and wait for the workflow first.
+- **No secrets anywhere**: both apps run as a user-assigned managed identity (`id-pdfrag-<suffix>`) with
+  `AcrPull`, `Cognitive Services OpenAI User`, `Search Index Data Contributor`, `Search Service Contributor`
+  and `Storage Blob Data Contributor`. `AZURE_CLIENT_ID` tells `DefaultAzureCredential` which identity to use.
+- **Network**: the API has internal ingress (unreachable from the internet); the UI calls it at
+  `http://ca-pdfrag-api`. The UI is restricted to the deployer's public IP; pass more with
+  `ALLOWED_IPS="1.2.3.4/32,5.6.7.0/24" bash scripts/deploy.sh`.
+- **Cost**: both apps scale 0-1 replicas, so idle costs nothing beyond the Container Apps free grant.
+  ACR Basic is ~$5/month. The first request after idle has a cold start of a few seconds.
+- AI Search is near-real-time: a deleted document can still be listed for about a second.
+
+`docker-compose.yml` runs both containers locally in fully-local mode (Ollama + FAISS), for machines with Docker.
+
 ## Project layout
 
 ```
@@ -167,7 +198,9 @@ src/
   rag/                    # embeddings, vector_store, retriever, generator, pipeline
   api/                    # FastAPI app (main.py), routes, Services container
 frontend/app.py           # Streamlit UI
-scripts/                  # ingest.py, ask.py (CLI)
+scripts/                  # ingest.py, ask.py (CLI), deploy.sh (Container Apps)
+Dockerfile, frontend/Dockerfile, docker-compose.yml
+.github/workflows/build.yml  # test + build + push images (OIDC)
 tests/                    # chunking, pipeline, AI Search, storage, API tests (all offline, with fakes)
 data/raw, data/processed  # local PDFs and FAISS index (git-ignored)
 ```
