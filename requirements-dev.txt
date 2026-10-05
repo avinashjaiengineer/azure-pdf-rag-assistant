@@ -1,0 +1,4 @@
+-r requirements.txt
+-r frontend/requirements.txt
+pytest>=8.0
+reportlab>=4.0  # generates test PDFs

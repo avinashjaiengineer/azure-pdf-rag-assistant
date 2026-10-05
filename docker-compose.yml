@@ -1,0 +1,23 @@
+# Local containers in fully-local mode (Ollama + FAISS + data/raw).
+# Azure backends need an Azure identity, which containers can't take from your `az login`;
+# run the API directly (uvicorn) for local Azure testing instead.
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      LLM_PROVIDER: ollama
+      EMBEDDING_PROVIDER: ollama
+      VECTOR_STORE: faiss
+      DOCUMENT_STORAGE: local
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ./data:/app/data
+
+  ui:
+    build: ./frontend
+    ports: ["8501:8501"]
+    environment:
+      API_URL: http://api:8000
+    depends_on: [api]
