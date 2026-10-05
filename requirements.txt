@@ -17,8 +17,7 @@ azure-search-documents>=11.6
 # Phase 4 - Azure Blob Storage
 azure-storage-blob>=12.20
 
-# Phase 5 - API + UI
+# Phase 5 - API (the Streamlit UI has its own frontend/requirements.txt)
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
-streamlit>=1.40
