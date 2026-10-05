@@ -48,15 +48,23 @@ with st.sidebar:
     with st.form("upload", clear_on_submit=True):
         files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
         submitted = st.form_submit_button("Upload & index", type="primary", use_container_width=True)
+    # AI Search is near-real-time: for ~1s after a write, /documents can miss a new upload
+    # or still list a deleted document. Patch the list with this session's own changes.
+    deleted = st.session_state.setdefault("deleted_ids", set())
+    uploaded = []
     if submitted and files:
         for f in files:
             with st.spinner(f"Indexing {f.name}…"):
                 r = call("POST", "/upload", files={"file": (f.name, f.getvalue(), "application/pdf")})
             if r:
-                st.success(f"{f.name}: {r.json()['chunks']} chunks indexed")
+                result = r.json()
+                uploaded.append({"document_id": result["document_id"], "filename": result["filename"]})
+                deleted.discard(result["document_id"])
+                st.success(f"{f.name}: {result['chunks']} chunks indexed")
 
     r = call("GET", "/documents")
-    docs = r.json() if r else []
+    docs = {d["document_id"]: d for d in (r.json() if r else []) + uploaded if d["document_id"] not in deleted}
+    docs = sorted(docs.values(), key=lambda d: d["filename"])
     if not docs:
         st.caption("No documents indexed yet.")
     for doc in docs:
@@ -64,6 +72,7 @@ with st.sidebar:
         name_col.markdown(f"**{doc['filename']}**  \n`{doc['document_id']}`")
         if delete_col.button("", icon=":material/delete:", key=f"del-{doc['document_id']}", help=f"Delete {doc['filename']}"):
             if call("DELETE", f"/documents/{doc['document_id']}"):
+                deleted.add(doc["document_id"])
                 st.rerun()
 
     st.divider()
